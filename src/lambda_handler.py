@@ -1,6 +1,3 @@
-"""
-Simple Lambda handler - NO FAKE DATA EVER
-"""
 import json
 import uuid
 import boto3
@@ -22,7 +19,7 @@ def lambda_handler(event, context):
             return {'statusCode': 200, 'headers': headers, 'body': ''}
         
         if method == 'GET' and path.endswith('/images'):
-            return handle_list_images(headers)
+            return handle_list_images(event, headers)
         elif method == 'POST' and path.endswith('/images'):
             return handle_upload_image(event, headers)
         elif method == 'GET' and '/images/' in path:
@@ -45,9 +42,14 @@ def lambda_handler(event, context):
             'body': json.dumps({'error': str(e)})
         }
 
-def handle_list_images(headers):
-    """List images from DynamoDB - REAL DATA ONLY"""
+def handle_list_images(event, headers):
+    """List images with WORKING filters"""
     try:
+        # Get filters from query parameters
+        query_params = event.get('queryStringParameters') or {}
+        user_filter = query_params.get('user_id')
+        tag_filter = query_params.get('tag')
+        
         dynamodb = boto3.resource(
             'dynamodb',
             endpoint_url='http://localstack:4566',
@@ -56,15 +58,30 @@ def handle_list_images(headers):
             region_name='us-east-1'
         )
         table = dynamodb.Table('images')
-        response = table.scan(Limit=50)
+        
+        # Get all images first
+        response = table.scan()
         items = response.get('Items', [])
+        
+        # Apply filters
+        filtered_items = items
+        
+        if user_filter:
+            filtered_items = [item for item in filtered_items if item.get('user_id') == user_filter]
+            
+        if tag_filter:
+            filtered_items = [item for item in filtered_items if tag_filter in item.get('tags', [])]
         
         return {
             'statusCode': 200,
             'headers': headers,
             'body': json.dumps({
-                'images': items,
-                'count': len(items)
+                'images': filtered_items,
+                'count': len(filtered_items),
+                'filters_applied': {
+                    'user_id': user_filter,
+                    'tag': tag_filter
+                }
             })
         }
     except Exception as e:
@@ -79,7 +96,7 @@ def handle_list_images(headers):
         }
 
 def handle_upload_image(event, headers):
-    """Upload REAL image to S3 and metadata to DynamoDB"""
+    """Upload image"""
     try:
         body = json.loads(event.get('body', '{}'))
         
@@ -93,12 +110,12 @@ def handle_upload_image(event, headers):
         image_id = str(uuid.uuid4())
         upload_date = datetime.now().isoformat()
         
-        # Decode REAL image
+        # Decode image
         image_data = base64.b64decode(body['image_data'])
         file_extension = body['filename'].split('.')[-1] if '.' in body['filename'] else 'jpg'
         s3_key = f"images/{body['user_id']}/{image_id}.{file_extension}"
         
-        # Upload to REAL S3
+        # Upload to S3
         s3_client = boto3.client(
             's3',
             endpoint_url='http://localstack:4566',
@@ -114,7 +131,7 @@ def handle_upload_image(event, headers):
             ContentType=f'image/{file_extension}'
         )
         
-        # Save to REAL DynamoDB
+        # Save to DynamoDB
         dynamodb = boto3.resource(
             'dynamodb',
             endpoint_url='http://localstack:4566',
@@ -154,7 +171,7 @@ def handle_upload_image(event, headers):
         }
 
 def handle_get_image(image_id, headers):
-    """Get REAL image details"""
+    """Get image details"""
     try:
         dynamodb = boto3.resource(
             'dynamodb',
@@ -197,7 +214,7 @@ def handle_get_image(image_id, headers):
         }
 
 def handle_delete_image(image_id, headers):
-    """Delete REAL image from S3 and DynamoDB"""
+    """Delete image"""
     try:
         # Get image info
         dynamodb = boto3.resource(
@@ -218,7 +235,7 @@ def handle_delete_image(image_id, headers):
                 'body': json.dumps({'error': 'Image not found'})
             }
         
-        # Delete from REAL S3
+        # Delete from S3
         s3_client = boto3.client(
             's3',
             endpoint_url='http://localstack:4566',
@@ -228,7 +245,7 @@ def handle_delete_image(image_id, headers):
         )
         s3_client.delete_object(Bucket='instagram-images', Key=item['s3_key'])
         
-        # Delete from REAL DynamoDB
+        # Delete from DynamoDB
         table.delete_item(Key={'image_id': image_id})
         
         return {

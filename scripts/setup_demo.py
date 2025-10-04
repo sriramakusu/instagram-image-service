@@ -220,6 +220,19 @@ def setup_api_gateway():
                 authorizationType='NONE'
             )
             
+            # Add request parameters for GET methods to pass query strings
+            if method['http_method'] == 'GET':
+                apigateway.put_method(
+                    restApiId=api_id,
+                    resourceId=method['resource_id'],
+                    httpMethod=method['http_method'],
+                    authorizationType='NONE',
+                    requestParameters={
+                        'method.request.querystring.user_id': False,
+                        'method.request.querystring.tag': False
+                    }
+                )
+            
             # Create integration
             uri = f"arn:aws:apigateway:{REGION}:lambda:path/2015-03-31/functions/{function_arn}/invocations"
             
@@ -229,7 +242,11 @@ def setup_api_gateway():
                 httpMethod=method['http_method'],
                 type='AWS_PROXY',
                 integrationHttpMethod='POST',
-                uri=uri
+                uri=uri,
+                requestParameters={
+                    'integration.request.querystring.user_id': 'method.request.querystring.user_id',
+                    'integration.request.querystring.tag': 'method.request.querystring.tag'
+                } if method['http_method'] == 'GET' else {}
             )
         
         # Deploy API
