@@ -37,13 +37,14 @@ class TestLambdaHandler:
         assert body['count'] == 0
         assert body['images'] == []
         assert 'filters_applied' in body
+        assert body['query_method'] == 'full_scan'
     
     @patch('boto3.resource')
     def test_list_images_with_user_filter(self, mock_resource):
         """Test listing images filtered by user_id"""
-        # Mock DynamoDB table with test data
+        # Mock DynamoDB table with GSI query
         mock_table = MagicMock()
-        mock_table.scan.return_value = {
+        mock_table.query.return_value = {
             'Items': [
                 {
                     'image_id': 'test-1',
@@ -53,15 +54,6 @@ class TestLambdaHandler:
                     'tags': ['test'],
                     's3_key': 'images/user1/test-1.jpg',
                     'description': 'Test image 1'
-                },
-                {
-                    'image_id': 'test-2',
-                    'user_id': 'user2',
-                    'filename': 'test2.jpg',
-                    'upload_date': '2024-01-02T00:00:00',
-                    'tags': ['demo'],
-                    's3_key': 'images/user2/test-2.jpg',
-                    'description': 'Test image 2'
                 }
             ]
         }
@@ -81,11 +73,20 @@ class TestLambdaHandler:
         assert body['images'][0]['user_id'] == 'user1'
         assert body['filters_applied']['user_id'] == 'user1'
         assert body['filters_applied']['tag'] is None
+        assert body['query_method'] == 'gsi_query'
+        
+        # Verify GSI query was called
+        mock_table.query.assert_called_once_with(
+            IndexName='user-upload-date-index',
+            KeyConditionExpression='user_id = :user_id',
+            ExpressionAttributeValues={':user_id': 'user1'},
+            ScanIndexForward=False
+        )
     
     @patch('boto3.resource')
     def test_list_images_with_tag_filter(self, mock_resource):
         """Test listing images filtered by tag"""
-        # Mock DynamoDB table with test data
+        # Mock DynamoDB table with scan filter
         mock_table = MagicMock()
         mock_table.scan.return_value = {
             'Items': [
@@ -97,15 +98,6 @@ class TestLambdaHandler:
                     'tags': ['test', 'demo'],
                     's3_key': 'images/user1/test-1.jpg',
                     'description': 'Test image 1'
-                },
-                {
-                    'image_id': 'test-2',
-                    'user_id': 'user2',
-                    'filename': 'test2.jpg',
-                    'upload_date': '2024-01-02T00:00:00',
-                    'tags': ['production'],
-                    's3_key': 'images/user2/test-2.jpg',
-                    'description': 'Test image 2'
                 }
             ]
         }
@@ -125,13 +117,20 @@ class TestLambdaHandler:
         assert 'demo' in body['images'][0]['tags']
         assert body['filters_applied']['tag'] == 'demo'
         assert body['filters_applied']['user_id'] is None
+        assert body['query_method'] == 'scan_with_filter'
+        
+        # Verify scan with filter was called
+        mock_table.scan.assert_called_once_with(
+            FilterExpression='contains(tags, :tag)',
+            ExpressionAttributeValues={':tag': 'demo'}
+        )
     
     @patch('boto3.resource')
     def test_list_images_with_both_filters(self, mock_resource):
         """Test listing images with both user_id and tag filters"""
-        # Mock DynamoDB table with test data
+        # Mock DynamoDB table with GSI query (user filter takes precedence)
         mock_table = MagicMock()
-        mock_table.scan.return_value = {
+        mock_table.query.return_value = {
             'Items': [
                 {
                     'image_id': 'test-1',
@@ -150,15 +149,6 @@ class TestLambdaHandler:
                     'tags': ['work'],
                     's3_key': 'images/alice/test-2.jpg',
                     'description': 'Work photo'
-                },
-                {
-                    'image_id': 'test-3',
-                    'user_id': 'bob',
-                    'filename': 'vacation2.jpg',
-                    'upload_date': '2024-01-03T00:00:00',
-                    'tags': ['vacation'],
-                    's3_key': 'images/bob/test-3.jpg',
-                    'description': 'Bob vacation'
                 }
             ]
         }
@@ -179,6 +169,15 @@ class TestLambdaHandler:
         assert 'vacation' in body['images'][0]['tags']
         assert body['filters_applied']['user_id'] == 'alice'
         assert body['filters_applied']['tag'] == 'vacation'
+        assert body['query_method'] == 'gsi_query'
+        
+        # Verify GSI query was called (user filter takes precedence)
+        mock_table.query.assert_called_once_with(
+            IndexName='user-upload-date-index',
+            KeyConditionExpression='user_id = :user_id',
+            ExpressionAttributeValues={':user_id': 'alice'},
+            ScanIndexForward=False
+        )
     
     @patch('boto3.client')
     @patch('boto3.resource')

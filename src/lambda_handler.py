@@ -1,3 +1,6 @@
+"""
+Simple Lambda handler - FILTERS WORKING
+"""
 import json
 import uuid
 import boto3
@@ -59,18 +62,43 @@ def handle_list_images(event, headers):
         )
         table = dynamodb.Table('images')
         
-        # Get all images first
-        response = table.scan()
-        items = response.get('Items', [])
-        
-        # Apply filters
-        filtered_items = items
-        
+        # Use GSI for efficient user-based queries
         if user_filter:
-            filtered_items = [item for item in filtered_items if item.get('user_id') == user_filter]
+            # Query GSI for specific user
+            response = table.query(
+                IndexName='user-upload-date-index',
+                KeyConditionExpression='user_id = :user_id',
+                ExpressionAttributeValues={':user_id': user_filter},
+                ScanIndexForward=False  # Sort by upload_date descending (newest first)
+            )
+            items = response.get('Items', [])
             
-        if tag_filter:
-            filtered_items = [item for item in filtered_items if tag_filter in item.get('tags', [])]
+            # Apply tag filter if specified
+            if tag_filter:
+                filtered_items = [item for item in items if tag_filter in item.get('tags', [])]
+            else:
+                filtered_items = items
+                
+        elif tag_filter:
+            # No user filter, but tag filter - need to scan and filter by tag
+            response = table.scan(
+                FilterExpression='contains(tags, :tag)',
+                ExpressionAttributeValues={':tag': tag_filter}
+            )
+            filtered_items = response.get('Items', [])
+            
+        else:
+            # No filters - get all images (scan)
+            response = table.scan()
+            filtered_items = response.get('Items', [])
+        
+        # Sort by upload_date descending if not already sorted by GSI
+        if not user_filter:
+            filtered_items = sorted(
+                filtered_items, 
+                key=lambda x: x.get('upload_date', ''), 
+                reverse=True
+            )
         
         return {
             'statusCode': 200,
@@ -81,7 +109,8 @@ def handle_list_images(event, headers):
                 'filters_applied': {
                     'user_id': user_filter,
                     'tag': tag_filter
-                }
+                },
+                'query_method': 'gsi_query' if user_filter else ('scan_with_filter' if tag_filter else 'full_scan')
             })
         }
     except Exception as e:
@@ -91,7 +120,8 @@ def handle_list_images(event, headers):
             'body': json.dumps({
                 'images': [],
                 'count': 0,
-                'error': str(e)
+                'error': str(e),
+                'query_method': 'error'
             })
         }
 
